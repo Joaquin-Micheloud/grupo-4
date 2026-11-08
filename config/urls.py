@@ -2,6 +2,8 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework_simplejwt.views import TokenRefreshView
 from core.views import RegisterView, SocialLoginJWTView, ThrottledTokenObtainPairView
+from django.views.decorators.csrf import csrf_exempt
+from core.graphql_views import JWTGraphQLView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -12,4 +14,5 @@ urlpatterns = [
     path("api-auth/", include("rest_framework.urls")),
     path("accounts/", include("allauth.urls")),
     path("api/auth/social/jwt/", SocialLoginJWTView.as_view(), name="social_jwt"),
+    path("graphql/", csrf_exempt(JWTGraphQLView.as_view(graphiql=True))),
 ]

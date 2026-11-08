@@ -1,0 +1,88 @@
+import graphene
+from graphene_django import DjangoObjectType
+from graphql import GraphQLError
+
+from .models import Project, Task, Tag
+from .serializers import TaskSerializer
+from .services import MembershipService, NotificationService
+
+
+# --- Tipos GraphQL ---
+class TagType(DjangoObjectType):
+    class Meta:
+        model = Tag
+        fields = ("id", "name")
+
+
+class TaskType(DjangoObjectType):
+    class Meta:
+        model = Task
+        fields = ("id", "title", "description", "priority", "status", "due_date", "tags", "project")
+        convert_choices_to_enum = False  # Mantiene valores en minúscula ("pendiente")
+
+
+class ProjectType(DjangoObjectType):
+    class Meta:
+        model = Project
+        fields = ("id", "name", "description", "tasks")
+
+
+# --- Queries ---
+def tasks_visible_for(user):
+    """Mismas reglas que TaskViewSet.get_queryset: solo tareas de proyectos accesibles."""
+    if not user.is_authenticated:
+        return Task.objects.none()
+    return Task.objects.filter(project__memberships__user=user).distinct()
+
+
+class Query(graphene.ObjectType):
+    all_projects = graphene.List(ProjectType)
+    task = graphene.Field(TaskType, id=graphene.ID(required=True))
+    tasks_by_status = graphene.List(TaskType, status=graphene.String(required=True))
+
+    def resolve_all_projects(root, info):
+        user = info.context.user
+        if not user.is_authenticated:
+            return Project.objects.none()
+        return MembershipService.projects_for(user)
+
+    def resolve_task(root, info, id):
+        return tasks_visible_for(info.context.user).filter(pk=id).first()
+
+    def resolve_tasks_by_status(root, info, status):
+        return tasks_visible_for(info.context.user).filter(status=status)
+
+
+# --- Mutations ---
+class CreateTask(graphene.Mutation):
+    class Arguments:
+        project_id = graphene.ID(required=True)
+        title = graphene.String(required=True)
+        priority = graphene.String(default_value="media")
+
+    task = graphene.Field(TaskType)
+    ok = graphene.Boolean()
+
+    def mutate(root, info, project_id, title, priority):
+        user = info.context.user
+        if not user.is_authenticated:
+            raise GraphQLError("Autenticación requerida.")
+
+        serializer = TaskSerializer(data={"project": project_id, "title": title, "priority": priority})
+        if not serializer.is_valid():
+            errores = {campo: [str(e) for e in lista] for campo, lista in serializer.errors.items()}
+            raise GraphQLError(f"Datos inválidos: {errores}")
+
+        if not MembershipService.is_admin(user, serializer.validated_data["project"]):
+            raise GraphQLError("Solo un admin del proyecto puede crear tareas en él.")
+
+        task = serializer.save(owner=user)
+        NotificationService.notify_task_created(task)
+        return CreateTask(task=task, ok=True)
+
+
+class Mutation(graphene.ObjectType):
+    create_task = CreateTask.Field()
+
+
+schema = graphene.Schema(query=Query, mutation=Mutation)
