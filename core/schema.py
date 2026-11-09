@@ -80,9 +80,36 @@ class CreateTask(graphene.Mutation):
         NotificationService.notify_task_created(task)
         return CreateTask(task=task, ok=True)
 
+class UpdateTaskStatus(graphene.Mutation):
+    class Arguments:
+        id = graphene.ID(required=True)
+        status = graphene.String(required=True)
+
+    task = graphene.Field(TaskType)
+    ok = graphene.Boolean()
+
+    def mutate(root, info, id, status):
+        user = info.context.user
+        if not user.is_authenticated:
+            raise GraphQLError("Autenticación requerida.")
+
+        task = tasks_visible_for(user).filter(pk=id).first()
+        if task is None:
+            raise GraphQLError("Tarea no encontrada.")
+
+        if not MembershipService.is_admin(user, task.project):
+            raise GraphQLError("Solo un admin del proyecto puede modificar tareas.")
+
+        serializer = TaskSerializer(task, data={"status": status}, partial=True)
+        if not serializer.is_valid():
+            errores = {c: [str(e) for e in l] for c, l in serializer.errors.items()}
+            raise GraphQLError(f"Datos inválidos: {errores}")
+
+        task = serializer.save()
+        return UpdateTaskStatus(task=task, ok=True)
 
 class Mutation(graphene.ObjectType):
     create_task = CreateTask.Field()
-
+    update_task_status = UpdateTaskStatus.Field()
 
 schema = graphene.Schema(query=Query, mutation=Mutation)
